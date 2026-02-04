@@ -1,6 +1,6 @@
 # MTA GTFS-Realtime → JSON (Cloudflare Worker)
 
-Cloudflare Worker that fetches MTA GTFS-RT protobuf feeds and returns JSON. Made for ESP32 and other devices that cant parse protobuf.
+Cloudflare Worker that fetches MTA GTFS-RT protobuf feeds and returns JSON. Made for ESP32 and other devices that struggle with parsing big protobufs.
 
 ## Feeds
 - Subway (IRT, ACE, BDFM, NQRW, JZ, L, G, SI)
@@ -16,7 +16,7 @@ npm run deploy   # cloudflare
 
 ## Endpoints
 - `/v1/feeds` - list feeds
-- `/v1/feed/:feed/arrivals?stop_id=123N` - next arrivals (what the esp32 uses)
+- `/v1/feed/:feed/arrivals?stop_id=123N` - next arrivals 
 - `/v1/feed/:feed/raw` - full decoded gtfs-rt
 - `/v1/alerts/:scope` - alerts (subway/bus/lirr/mnr)
 
