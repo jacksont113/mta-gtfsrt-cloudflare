@@ -1,0 +1,22 @@
+{
+  "name": "mta-gtfsrt-json",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "fetch-protos": "node scripts/fetch-protos.mjs",
+    "gen-protos": "npx pbjs -t static-module -w es6 --no-verify --no-delimited --force-number -p protos -o src/generated/gtfsrt_nyct.js protos/com/google/transit/realtime/gtfs-realtime.proto protos/gtfs-realtime-NYCT.proto protos/mta-railroad.proto && npx pbjs -t static-module -w es6 --no-verify --no-delimited --force-number -p protos -o src/generated/gtfsrt_mercury.js protos/com/google/transit/realtime/gtfs-realtime.proto protos/gtfs-realtime-service-status.proto protos/mta-railroad.proto && npx pbts -o src/generated/gtfsrt_nyct.d.ts src/generated/gtfsrt_nyct.js && npx pbts -o src/generated/gtfsrt_mercury.d.ts src/generated/gtfsrt_mercury.js",
+    "gen-mnr-trips": "node scripts/generate-mnr-trips.mjs",
+    "build:proto": "npm run fetch-protos && npm run gen-protos",
+    "dev": "npm run build:proto && npx wrangler dev",
+    "deploy": "npm run build:proto && npx wrangler deploy"
+  },
+  "dependencies": {
+    "protobufjs": "^7.5.4"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20251218.0",
+    "protobufjs-cli": "^1.2.0",
+    "typescript": "^5.6.3",
+    "wrangler": "^4.56.0"
+  }
+}

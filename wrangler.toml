@@ -1,0 +1,7 @@
+name = "mta-gtfsrt-json"
+main = "index.js"
+compatibility_date = "2024-01-01"
+
+[[kv_namespaces]]
+binding = "MNR_TRIPS"
+id = "f7afe1041c534774b6758a3ab8057b2c"
