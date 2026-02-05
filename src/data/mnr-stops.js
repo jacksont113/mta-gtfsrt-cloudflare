@@ -1,6 +1,6 @@
 // Auto-generated from stops.txt
 // Maps stop_id to stop_name for MNR stations
-export default {
+export const MNR_STOPS = {
   "1": "Grand Central",
   "4": "Harlem-125 St",
   "9": "Morris Heights",

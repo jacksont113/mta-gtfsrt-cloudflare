@@ -1,6 +1,7 @@
 import * as nyctMod from "./src/generated/gtfsrt_nyct.js";
 import * as mercuryMod from "./src/generated/gtfsrt_mercury.js";
-import MNR_STOPS from "./src/data/mnr-stops.js";
+import { MNR_STOPS } from "./src/data/mnr-stops.js";
+import { MNR_TRACKS } from "./src/data/mnr-tracks.js";
 
 const FEEDS = {
   irt: "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
@@ -51,7 +52,8 @@ async function fetchPb(url, cacheSeconds, apiKey) {
     accept: "application/x-protobuf, application/octet-stream;q=0.9, */*;q=0.1",
     "accept-encoding": "identity"
   };
-  if (apiKey) headers["x-api-key"] = apiKey;
+
+  // if (apiKey) headers["x-api-key"] = apiKey;
 
   const req = new Request(url, { headers });
 
@@ -79,15 +81,15 @@ async function fetchPb(url, cacheSeconds, apiKey) {
   return new Uint8Array(ab);
 }
 
-// Second-layer cache: stores decoded JSON to avoid CPU-intensive protobuf parsing on each request
-async function fetchAndDecodeWithCache(feedUrl, FeedMessage, cacheSeconds, apiKey) {
+// Second-layer cache
+async function fetchAndDecodeWithCache(feedUrl, FeedMessage, cacheSeconds) {
   const cache = caches.default;
   const jsonCacheKey = new Request(feedUrl + "?format=decoded-json");
 
   const hit = await cache.match(jsonCacheKey);
   if (hit) return await hit.json();
 
-  const bytes = await fetchPb(feedUrl, cacheSeconds, apiKey);
+  const bytes = await fetchPb(feedUrl, cacheSeconds);
   const msg = FeedMessage.decode(bytes);
   const decoded = toObj(FeedMessage, msg);
 
@@ -104,17 +106,173 @@ async function fetchAndDecodeWithCache(feedUrl, FeedMessage, cacheSeconds, apiKe
   return decoded;
 }
 
-// Third-layer cache: stores the fully-processed final JSON (summary/arrivals) to avoid
-// even the overhead of parsing/looping over the large decoded JSON on every request.
-async function fetchAndProcessWithCache(feedUrl, FeedMessage, cacheSeconds, apiKey, processFn) {
+// arrivals
+async function fetchArrivalsOptimized(feedUrl, FeedMessage, cacheSeconds, stopId, limit, tripsLookup, feedKey) {
+  const cache = caches.default;
+  const arrivalsCacheKey = new Request(feedUrl + `?format=arrivals-v2&stop_id=${stopId}&limit=${limit}`);
+
+  // check arrival cache
+  const hit = await cache.match(arrivalsCacheKey);
+  if (hit) {
+    return { cached: true, response: hit };
+  }
+
+  // fetch protobuf
+  const bytes = await fetchPb(feedUrl, cacheSeconds);
+
+  // Decode protobuf
+  const msg = FeedMessage.decode(bytes);
+
+  const tNow = nowUnix();
+  const out = [];
+
+  const getStopName = (sid) => {
+    if (!sid) return null;
+    const cleanId = sid.endsWith('N') || sid.endsWith('S') ? sid.slice(0, -1) : sid;
+    return MNR_STOPS[cleanId] || MNR_STOPS[sid] || null;
+  };
+
+  const dirFromStopId = (sid) => {
+    if (typeof sid !== "string" || sid.length === 0) return null;
+    const last = sid[sid.length - 1].toUpperCase();
+    if (last === "N") return "NORTH";
+    if (last === "S") return "SOUTH";
+    return null;
+  };
+
+  const dirFromDirectionId = (id) => {
+    if (id === 0) return "DIR_0";
+    if (id === 1) return "DIR_1";
+    return null;
+  };
+
+  const dirFromTripsLookup = (lookup, routeId, startTime) => {
+    if (!lookup || !routeId || !startTime) return null;
+    const key = `${routeId}|${startTime}`;
+    const match = lookup[key];
+    return match?.headsign ?? (typeof match === 'string' ? match : null);
+  };
+
+  const peakOffpeakFromTripsLookup = (lookup, routeId, startTime) => {
+    if (!lookup || !routeId || !startTime) return null;
+    const key = `${routeId}|${startTime}`;
+    const match = lookup[key];
+    return match?.peak_offpeak ?? null;
+  };
+
+  // Station-specific fallbacks for direction based on track assignment
+  const dirFromTrackAtStop = (stopId, track) => {
+    if (!stopId || !track) return null;
+
+    // Generated from static GTFS data (stops.txt + stop_times.txt + trips.txt)
+    return MNR_TRACKS[stopId]?.[track] || null;
+  };
+
+  // Work directly with the raw decoded message - entity array
+  const entities = msg.entity || [];
+
+  for (let i = 0; i < entities.length; i++) {
+    const ent = entities[i];
+    const tu = ent.tripUpdate;
+    if (!tu) continue;
+
+    const trip = tu.trip || {};
+    const route_id = trip.routeId || null;
+    const trip_id = trip.tripId || null;
+    const direction_id = trip.directionId ?? null;
+    const start_time = trip.startTime || null;
+
+    // Access NYCT extension directly from raw message (try camelCase property first)
+    const nyctTrip = trip.nyctTripDescriptor || trip.nyct_trip_descriptor || null;
+    const train_id = nyctTrip?.trainId || nyctTrip?.train_id || null;
+    const peak_offpeak = peakOffpeakFromTripsLookup(tripsLookup, route_id, start_time);
+
+    const stus = tu.stopTimeUpdate || [];
+
+    for (let j = 0; j < stus.length; j++) {
+      const stu = stus[j];
+      const sid = stu.stopId;
+      if (sid !== stopId) continue;
+
+      const arr = stu.arrival?.time != null ? Number(stu.arrival.time) : null;
+      const dep = stu.departure?.time != null ? Number(stu.departure.time) : null;
+      const when = arr ?? dep;
+
+      if (!when || !Number.isFinite(when)) continue;
+      if (when < tNow - 60) continue;
+
+      // Access extensions directly (try camelCase property first)
+      const nyctStopTime = stu.nyctStopTimeUpdate || stu.nyct_stop_time_update || null;
+      const railroadStopTime = stu.mtaRailroadStopTimeUpdate || stu.mta_railroad_stop_time_update || null;
+
+      const scheduled_track = nyctStopTime?.scheduledTrack || nyctStopTime?.scheduled_track || null;
+      const actual_track = nyctStopTime?.actualTrack || nyctStopTime?.actual_track || railroadStopTime?.track || null;
+      const train_status = railroadStopTime?.trainStatus || railroadStopTime?.train_status || null;
+
+      // Terminal determination
+      const lastStu = stus.length > 0 ? stus[stus.length - 1] : null;
+      const terminalStopId = lastStu?.stopId;
+      const terminalName = getStopName(terminalStopId);
+
+      const direction =
+        dirFromTripsLookup(tripsLookup, route_id, start_time) ??
+        terminalName ??
+        nyctTrip?.direction ??
+        dirFromTrackAtStop(stopId, actual_track) ??
+        dirFromStopId(stopId) ??
+        dirFromDirectionId(direction_id) ??
+        null;
+
+      const arrival = {
+        when,
+        minutes: Math.round((when - tNow) / 60),
+        route_id,
+        trip_id,
+        arrival_time: arr,
+        departure_time: dep
+      };
+
+      if (direction != null) arrival.direction = direction;
+      if (direction_id != null) arrival.direction_id = direction_id;
+      if (train_id != null) arrival.train_id = train_id;
+      if (scheduled_track != null) arrival.scheduled_track = scheduled_track;
+      if (actual_track != null) arrival.actual_track = actual_track;
+      if (train_status != null) arrival.train_status = train_status;
+      if (peak_offpeak != null) arrival.peak_offpeak = peak_offpeak;
+
+      out.push(arrival);
+    }
+  }
+
+  out.sort((a, b) => a.when - b.when);
+  const arrivals = out.slice(0, limit);
+
+  const responseData = { ok: true, feed: feedKey, stop_id: stopId, now: tNow, arrivals };
+
+  // Cache the result
+  await cache.put(
+    arrivalsCacheKey,
+    new Response(JSON.stringify(responseData), {
+      headers: {
+        "cache-control": `public, max-age=15`,
+        "content-type": "application/json"
+      }
+    })
+  );
+
+  return { cached: false, data: responseData };
+}
+
+// final JSON (summary/arrivals) cache
+async function fetchAndProcessWithCache(feedUrl, FeedMessage, cacheSeconds, processFn) {
   const cache = caches.default;
   const processedCacheKey = new Request(feedUrl + "?format=processed-json&fn=" + (processFn.name || "anon"));
 
   const hit = await cache.match(processedCacheKey);
   if (hit) return await hit.json();
 
-  // If no summary cache, we need the decoded data
-  const decoded = await fetchAndDecodeWithCache(feedUrl, FeedMessage, cacheSeconds, apiKey);
+  // fetch and decode protobuf
+  const decoded = await fetchAndDecodeWithCache(feedUrl, FeedMessage, cacheSeconds);
   const processed = processFn(decoded);
 
   await cache.put(
@@ -142,7 +300,7 @@ function getTransitRealtime(mod) {
 function toObj(FeedMessage, msg) {
   if (typeof FeedMessage?.toObject === "function") {
     return FeedMessage.toObject(msg, {
-      longs: Number, // Changed from String to Number to avoid string conversion overhead where possible
+      longs: Number, // Changed from String to Number
       enums: String,
       bytes: String,
       defaults: false,
@@ -178,7 +336,7 @@ function computeArrivals(feedObj, stopId, limit, tripsLookup = null) {
     return MNR_STOPS[cleanId] || MNR_STOPS[sid] || null;
   };
 
-  // Some trip updates lack the NYCT direction extension; fall back to stop suffix when possible.
+  // Some trip updates lack the mta direction extension; fall back to stop suffix when possible.
   const dirFromStopId = (sid) => {
     if (typeof sid !== "string" || sid.length === 0) return null;
     const last = sid[sid.length - 1].toUpperCase();
@@ -194,7 +352,7 @@ function computeArrivals(feedObj, stopId, limit, tripsLookup = null) {
   const dirFromTripsLookup = (lookup, routeId, startTime) => {
     if (!lookup || !routeId || !startTime) return null;
 
-    // Match by route_id + start_time (real-time trip_ids don't match static GTFS format)
+    // match by route_id + start_time
     const key = `${routeId}|${startTime}`;
     const match = lookup[key];
     return match?.headsign ?? (typeof match === 'string' ? match : null);
@@ -212,13 +370,8 @@ function computeArrivals(feedObj, stopId, limit, tripsLookup = null) {
   const dirFromTrackAtStop = (stopId, track) => {
     if (!stopId || !track) return null;
 
-    // Katonah (stop 86): track 2 = Grand Central, track 1 = Southeast
-    if (stopId === "86") {
-      if (track === "2") return "Grand Central";
-      if (track === "1") return "Southeast";
-    }
-
-    return null;
+    // Generated from static GTFS data (stops.txt + stop_times.txt + trips.txt)
+    return MNR_TRACKS[stopId]?.[track] || null;
   };
 
   for (const ent of feedObj?.entity ?? []) {
@@ -268,13 +421,13 @@ function computeArrivals(feedObj, stopId, limit, tripsLookup = null) {
       const actual_track = nyctStopTime?.actual_track ?? railroadStopTime?.track ?? null;
       const train_status = railroadStopTime?.trainStatus ?? railroadStopTime?.train_status ?? null;
 
-      // Determine terminal stop from the trip's schedule
+      // determine terminal stop (eg grand central)
       const stus = tu.stopTimeUpdate ?? tu.stop_time_update ?? [];
       const lastStu = stus.length > 0 ? stus[stus.length - 1] : null;
       const terminalStopId = lastStu?.stopId ?? lastStu?.stop_id;
       const terminalName = getStopName(terminalStopId);
 
-      // Determine direction with fallbacks
+      // determine direction
       const direction =
         dirFromTripsLookup(tripsLookup, route_id, start_time) ??
         terminalName ??
@@ -293,7 +446,7 @@ function computeArrivals(feedObj, stopId, limit, tripsLookup = null) {
         departure_time: dep
       };
 
-      // Only include fields that have values (not null/undefined)
+      // exclude null fields
       if (direction != null) arrival.direction = direction;
       if (direction_id != null) arrival.direction_id = direction_id;
       if (train_id != null) arrival.train_id = train_id;
@@ -459,38 +612,21 @@ export default {
       const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(50, Math.trunc(limitRaw))) : 8;
 
       try {
-        // For arrivals, we cache based on the specific stop_id to avoid re-computing arrivals
-        // from the huge feed on every request to that stop.
-        const cache = caches.default;
-        const arrivalsCacheKey = new Request(feedUrl + `?format=arrivals-json&stop_id=${stopId}&limit=${limit}`);
-
-        const hit = await cache.match(arrivalsCacheKey);
-        if (hit) {
-          // Return cached Response directly with CORS headers (avoid JSON.parse overhead)
-          const headers = new Headers(hit.headers);
-          headers.set("access-control-allow-origin", "*");
-          return new Response(hit.body, { status: hit.status, headers });
-        }
-
-        const decoded = await fetchAndDecodeWithCache(feedUrl, nyctTR.FeedMessage, 10, env.MTA_API_KEY);
         // Use trips lookup for MNR feed to get direction names from trip_headsign (loaded from KV)
         const tripsLookup = feedKey === "mnr" ? await env.MNR_TRIPS?.get("trips", { type: "json" }) : null;
-        const arrivals = computeArrivals(decoded, stopId, limit, tripsLookup);
 
-        const responseData = { ok: true, feed: feedKey, stop_id: stopId, now: nowUnix(), arrivals };
-
-        // Cache the processed arrivals for 10 seconds
-        await cache.put(
-          arrivalsCacheKey,
-          new Response(JSON.stringify(responseData), {
-            headers: {
-              "cache-control": `public, max-age=10`,
-              "content-type": "application/json"
-            }
-          })
+        const result = await fetchArrivalsOptimized(
+          feedUrl,
+          nyctTR.FeedMessage,
+          20, // Cache raw PBs for 20s
+          env.MTA_API_KEY,
+          stopId,
+          limit,
+          tripsLookup,
+          feedKey
         );
 
-        return json(responseData);
+        return json(result.data);
       } catch (e) {
         return json({ ok: false, error: String(e?.message ?? e) }, 502);
       }
@@ -534,5 +670,21 @@ export default {
     }
 
     return notFound();
+  },
+
+  async scheduled(event, env, ctx) {
+    // caches feeds
+    const feedPromises = Object.values(FEEDS).map(url =>
+      fetchPb(url, 20, env.MTA_API_KEY).catch(err => console.error("Warm feed failed", url, err))
+    );
+
+    // caches alerts
+    const mercuryTR = getTransitRealtime(mercuryMod);
+    const alertPromises = Object.values(ALERT_FEEDS).map(url =>
+      fetchAndProcessWithCache(url, mercuryTR.FeedMessage, 30, env.MTA_API_KEY, summarizeAlerts)
+        .catch(err => console.error("Warm alert failed", url, err))
+    );
+
+    ctx.waitUntil(Promise.all([...feedPromises, ...alertPromises]));
   }
 };

@@ -2,6 +2,11 @@ name = "mta-gtfsrt-json"
 main = "index.js"
 compatibility_date = "2024-01-01"
 
+# Scheduled trigger - runs every minute to pre-cache decoded feeds
+# This prevents CPU limit issues by doing heavy protobuf decoding in the background
+[triggers]
+crons = ["* * * * *"]
+
 [[kv_namespaces]]
 binding = "MNR_TRIPS"
 id = "f7afe1041c534774b6758a3ab8057b2c"
