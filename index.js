@@ -613,8 +613,7 @@ export default {
 
       try {
         // Use trips lookup for MNR feed to get direction names from trip_headsign (loaded from KV)
-        // Disabled due to routeId collisions (showing New Rochelle at Katonah)
-        const tripsLookup = null; // feedKey === "mnr" ? await env.MNR_TRIPS?.get("trips", { type: "json" }) : null;
+        const tripsLookup = feedKey === "mnr" ? await env.MNR_TRIPS?.get("trips", { type: "json" }) : null;
 
         const result = await fetchArrivalsOptimized(
           feedUrl,
