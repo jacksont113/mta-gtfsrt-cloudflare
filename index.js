@@ -672,18 +672,23 @@ export default {
   },
 
   async scheduled(event, env, ctx) {
+    // Warmer disabled by user request
     // caches feeds
-    const feedPromises = Object.values(FEEDS).map(url =>
-      fetchPb(url, 20, env.MTA_API_KEY).catch(err => console.error("Warm feed failed", url, err))
-    );
+    // const feedPromises = Object.values(FEEDS).map(url =>
+    //   fetchPb(url, 20, env.MTA_API_KEY).catch(err => console.error("Warm feed failed", url, err))
+    // );
 
     // caches alerts
-    const mercuryTR = getTransitRealtime(mercuryMod);
-    const alertPromises = Object.values(ALERT_FEEDS).map(url =>
-      fetchAndProcessWithCache(url, mercuryTR.FeedMessage, 30, summarizeAlerts)
-        .catch(err => console.error("Warm alert failed", url, err))
-    );
+    // const mercuryTR = getTransitRealtime(mercuryMod);
+    // // caches alerts (limit to essential to avoid hitting 50 subrequest limit)
+    // // 9 feeds * 3 ops = 27. 2 alerts * 7 ops = 14. Total 41 < 50.
+    // const ESSENTIAL_ALERTS = ['subway', 'mnr'];
+    // const alertPromises = ESSENTIAL_ALERTS.map(key => {
+    //   const url = ALERT_FEEDS[key];
+    //   return fetchAndProcessWithCache(url, mercuryTR.FeedMessage, 30, summarizeAlerts)
+    //     .catch(err => console.error("Warm alert failed", url, err));
+    // });
 
-    ctx.waitUntil(Promise.all([...feedPromises, ...alertPromises]));
+    // ctx.waitUntil(Promise.all([...feedPromises, ...alertPromises]));
   }
 };
