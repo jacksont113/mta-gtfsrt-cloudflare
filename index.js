@@ -660,7 +660,6 @@ export default {
           feedUrl,
           mercuryTR.FeedMessage,
           30,
-          env.MTA_API_KEY,
           summarizeAlerts
         );
         return json({ ok: true, scope, now: nowUnix(), alerts });
@@ -681,7 +680,7 @@ export default {
     // caches alerts
     const mercuryTR = getTransitRealtime(mercuryMod);
     const alertPromises = Object.values(ALERT_FEEDS).map(url =>
-      fetchAndProcessWithCache(url, mercuryTR.FeedMessage, 30, env.MTA_API_KEY, summarizeAlerts)
+      fetchAndProcessWithCache(url, mercuryTR.FeedMessage, 30, summarizeAlerts)
         .catch(err => console.error("Warm alert failed", url, err))
     );
 
