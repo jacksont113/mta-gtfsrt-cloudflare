@@ -626,6 +626,7 @@ export default {
           feedKey
         );
 
+        if (result.cached) return result.response;
         return json(result.data);
       } catch (e) {
         return json({ ok: false, error: String(e?.message ?? e) }, 502);
