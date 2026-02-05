@@ -613,13 +613,13 @@ export default {
 
       try {
         // Use trips lookup for MNR feed to get direction names from trip_headsign (loaded from KV)
-        const tripsLookup = feedKey === "mnr" ? await env.MNR_TRIPS?.get("trips", { type: "json" }) : null;
+        // Disabled due to routeId collisions (showing New Rochelle at Katonah)
+        const tripsLookup = null; // feedKey === "mnr" ? await env.MNR_TRIPS?.get("trips", { type: "json" }) : null;
 
         const result = await fetchArrivalsOptimized(
           feedUrl,
           nyctTR.FeedMessage,
           20, // Cache raw PBs for 20s
-          env.MTA_API_KEY,
           stopId,
           limit,
           tripsLookup,
