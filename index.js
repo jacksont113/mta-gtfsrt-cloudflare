@@ -148,6 +148,9 @@ async function fetchArrivalsOptimized(feedUrl, FeedMessage, cacheSeconds, stopId
 
   const getStopName = (sid) => {
     if (!sid) return null;
+    // Only use MNR static data if we are actually processing the MNR feed
+    if (feedKey !== 'mnr') return null;
+
     const cleanId = sid.endsWith('N') || sid.endsWith('S') ? sid.slice(0, -1) : sid;
     return MNR_STOPS[cleanId] || MNR_STOPS[sid] || null;
   };
