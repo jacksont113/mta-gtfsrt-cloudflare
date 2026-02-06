@@ -23,6 +23,14 @@ const ALERT_FEEDS = {
   mnr: "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/camsys%2Fmnr-alerts"
 };
 
+const FEED_CACHE = new Map();
+const PENDING_FETCHES = new Map();
+
+function isFresh(timestamp, maxAgeSeconds) {
+  return (Date.now() - timestamp) < (maxAgeSeconds * 1000);
+}
+
+
 
 function nowUnix() {
   return Math.floor(Date.now() / 1000);
@@ -81,29 +89,42 @@ async function fetchPb(url, cacheSeconds, apiKey) {
   return new Uint8Array(ab);
 }
 
-// Second-layer cache
-async function fetchAndDecodeWithCache(feedUrl, FeedMessage, cacheSeconds) {
-  const cache = caches.default;
-  const jsonCacheKey = new Request(feedUrl + "?format=decoded-json");
+// Optimized fetch with In-Memory Caching + Request Coalescing
+async function getFeedMessage(feedUrl, FeedMessage, cacheSeconds, apiKey) {
+  const cached = FEED_CACHE.get(feedUrl);
+  if (cached && isFresh(cached.timestamp, cacheSeconds)) {
+    return cached.data;
+  }
 
-  const hit = await cache.match(jsonCacheKey);
-  if (hit) return await hit.json();
+  if (PENDING_FETCHES.has(feedUrl)) {
+    return await PENDING_FETCHES.get(feedUrl);
+  }
 
-  const bytes = await fetchPb(feedUrl, cacheSeconds);
-  const msg = FeedMessage.decode(bytes);
-  const decoded = toObj(FeedMessage, msg);
+  const promise = (async () => {
+    try {
+      const bytes = await fetchPb(feedUrl, cacheSeconds, apiKey);
+      const msg = FeedMessage.decode(bytes);
+      const decoded = toObj(FeedMessage, msg);
 
-  await cache.put(
-    jsonCacheKey,
-    new Response(JSON.stringify(decoded), {
-      headers: {
-        "cache-control": `public, max-age=${cacheSeconds}`,
-        "content-type": "application/json"
-      }
-    })
-  );
+      FEED_CACHE.set(feedUrl, {
+        timestamp: Date.now(),
+        data: decoded
+      });
 
-  return decoded;
+      return decoded;
+    } finally {
+
+      PENDING_FETCHES.delete(feedUrl);
+    }
+  })();
+
+  PENDING_FETCHES.set(feedUrl, promise);
+  return await promise;
+}
+
+// Second-layer cache 
+async function fetchAndDecodeWithCache(feedUrl, FeedMessage, cacheSeconds, apiKey) {
+  return getFeedMessage(feedUrl, FeedMessage, cacheSeconds, apiKey);
 }
 
 // arrivals
@@ -117,11 +138,10 @@ async function fetchArrivalsOptimized(feedUrl, FeedMessage, cacheSeconds, stopId
     return { cached: true, response: hit };
   }
 
-  // fetch protobuf
-  const bytes = await fetchPb(feedUrl, cacheSeconds);
+  // Use the coalescing helper
+  const msg = await getFeedMessage(feedUrl, FeedMessage, cacheSeconds);
 
-  // Decode protobuf
-  const msg = FeedMessage.decode(bytes);
+
 
   const tNow = nowUnix();
   const out = [];
@@ -670,25 +690,4 @@ export default {
 
     return notFound();
   },
-
-  async scheduled(event, env, ctx) {
-    // Warmer disabled by user request
-    // caches feeds
-    // const feedPromises = Object.values(FEEDS).map(url =>
-    //   fetchPb(url, 20, env.MTA_API_KEY).catch(err => console.error("Warm feed failed", url, err))
-    // );
-
-    // caches alerts
-    // const mercuryTR = getTransitRealtime(mercuryMod);
-    // // caches alerts (limit to essential to avoid hitting 50 subrequest limit)
-    // // 9 feeds * 3 ops = 27. 2 alerts * 7 ops = 14. Total 41 < 50.
-    // const ESSENTIAL_ALERTS = ['subway', 'mnr'];
-    // const alertPromises = ESSENTIAL_ALERTS.map(key => {
-    //   const url = ALERT_FEEDS[key];
-    //   return fetchAndProcessWithCache(url, mercuryTR.FeedMessage, 30, summarizeAlerts)
-    //     .catch(err => console.error("Warm alert failed", url, err));
-    // });
-
-    // ctx.waitUntil(Promise.all([...feedPromises, ...alertPromises]));
-  }
 };
